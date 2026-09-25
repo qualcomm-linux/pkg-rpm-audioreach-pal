@@ -3,7 +3,7 @@
 
 Name:           audioreach-pal
 Version:        1.0.0
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        AudioReach Platform Adaptation Layer library
 License:        BSD-3-Clause-Clear
 URL:            https://github.com/AudioReach/audioreach-pal
@@ -59,7 +59,15 @@ find %{buildroot} -name '*.la' -delete
 
 %files
 %license LICENSE
-%{_libdir}/lib*.so*
+%{_libdir}/libpal.so.*
+# stream/session/device/bt plugins are dlopen'd by unversioned name via
+# plugin_manager.xml; their unversioned .so must remain in the main package
+%{_libdir}/libstream_*.so
+%{_libdir}/libstreamsensorpcmdata_headers.so
+%{_libdir}/libsession_*.so
+%{_libdir}/libdev_*.so
+%{_libdir}/libbt_*.so
+%{_libdir}/libplugin_manager.so
 %config(noreplace) %{_sysconfdir}/usecaseKvManager.xml
 %config(noreplace) %{_sysconfdir}/plugin_manager.xml
 %config(noreplace) %{_sysconfdir}/mixer_paths_*.xml
@@ -67,10 +75,16 @@ find %{buildroot} -name '*.la' -delete
 
 %files devel
 %{_includedir}/pal/
+%{_libdir}/libpal.so
 %{_libdir}/pkgconfig/*.pc
+# static archives built with --disable-shared, linked into libpal at build time
 %{_libdir}/libplugin_manager.a
 %{_libdir}/libsession_utils_config.a
 
 %changelog
+* Fri Sep 25 2026 Chiluka Rohith <rchiluka@qti.qualcomm.com> - 1.0.0-2
+- Move libpal.so unversioned symlink to -devel; keep plugin .so files in
+  main as PluginManager dlopen's them by unversioned name at runtime
+
 * Fri Aug 14 2026 Qualcomm Linux <quic_linux@quicinc.com> - 1.0.0-1
 - Initial RPM packaging of audioreach-pal version 1.0.0
