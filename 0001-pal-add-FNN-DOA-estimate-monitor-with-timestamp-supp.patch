@@ -1,0 +1,193 @@
+From 27e72004c3b5290fa2d3562e03585b0ac07dda17 Mon Sep 17 00:00:00 2001
+From: Karthik S <karthik@example.com>
+Date: Thu, 5 Nov 2026 13:02:40 +0530
+Subject: [PATCH] pal: add FNN+ DOA estimate monitor with timestamp support
+
+- Add PAL_PARAM_ID_FNN_PLUS_DOA_ESTIMATE_MONITOR_WITH_TIMESTAMP param ID
+- Add macros TALKER_DOA, TOTAL_AXIS, TOTAL_DEGREES
+- Bump PAL_VERSION to 2.2
+- Handle new param in SessionAlsaPcm::getParamWithTag
+- Route new param in StreamPCM::getParameters via dynamic_cast to SessionAlsaPcm
+- Add SessionAlsaPcm include/link deps to StreamPCM Makefile.am
+
+Upstream: AudioReach/audioreach-pal#111
+---
+ inc/PalDefs.h                                 |  7 +++-
+ session/SessionAlsaPcm/src/SessionAlsaPcm.cpp | 35 +++++++++++++++++++
+ stream/StreamPCM/Makefile.am                  |  5 +++
+ stream/StreamPCM/src/StreamPCM.cpp            | 15 ++++++--
+ 4 files changed, 59 insertions(+), 3 deletions(-)
+
+diff --git a/inc/PalDefs.h b/inc/PalDefs.h
+index f5fd83a..778c05e 100644
+--- a/inc/PalDefs.h
++++ b/inc/PalDefs.h
+@@ -59,8 +59,11 @@ extern "C" {
+ #define MAX_KEYWORD_SUPPORTED 8
+ #define PAL_MAX_LATENCY_MODES 8
+ #define PAL_CUSTOM_PARAM_MAX_STRING_LENGTH 64
++#define TALKER_DOA 2
++#define TOTAL_AXIS 2
++#define TOTAL_DEGREES 360
+ 
+-#define PAL_VERSION "2.1"
++#define PAL_VERSION "2.2"
+ #define PAL_MAX_SOUND_DOSE_VALUES 10
+ #define SEND_MSG_PARAM "sendMsg"
+ 
+@@ -903,6 +906,7 @@ typedef enum {
+     PAL_PARAM_ID_MULTI_CLIENT_ASR_OUTPUT = 107,
+     PAL_PARAM_ID_MULTI_CLIENT_SDZ_OUTPUT = 108,
+     PAL_PARAM_ID_VOICE_NS_RX_CFG = 109,
++    PAL_PARAM_ID_FNN_PLUS_DOA_ESTIMATE_MONITOR_WITH_TIMESTAMP = 110,
+ } pal_param_id_type_t;
+ 
+ /** HDMI/DP */
+@@ -1440,6 +1444,7 @@ struct pal_st_generic_recognition_event {
+     struct pal_st_recognition_event common;
+ };
+ 
++
+ struct detection_engine_config_voice_wakeup {
+     uint16_t mode;
+     uint16_t custom_payload_size;
+diff --git a/session/SessionAlsaPcm/src/SessionAlsaPcm.cpp b/session/SessionAlsaPcm/src/SessionAlsaPcm.cpp
+index 2d94d93..1023345 100644
+--- a/session/SessionAlsaPcm/src/SessionAlsaPcm.cpp
++++ b/session/SessionAlsaPcm/src/SessionAlsaPcm.cpp
+@@ -52,6 +52,7 @@
+ #include "asr_module_calibration_api.h"
+ #include "sdz_api.h"
+ #include "nmt_module_calibration_api.h"
++#include "fnn_plus_calibration_api_fvxv.h"
+ #include <errno.h>
+ #include <sys/klog.h>        /* Definition of SYSLOG_* constants */
+ 
+@@ -3056,6 +3057,39 @@ int SessionAlsaPcm::getParamWithTag(Stream *s __unused, int tagId, uint32_t para
+                           PARAM_ID_NMT_OUTPUT, configSize);
+             break;
+         }
++        case PAL_PARAM_ID_FNN_PLUS_DOA_ESTIMATE_MONITOR_WITH_TIMESTAMP:
++        {
++            pal_param_payload *out = NULL;
++            payloadSize = sizeof(struct apm_module_param_data_t) +
++                          sizeof(fnn_plus_doa_estimate_monitor_param_with_ts_t) +
++                          (TOTAL_DEGREES * sizeof(int16_t) * 2) * TOTAL_AXIS;
++            if (payloadSize % 8 != 0)
++                payloadSize += (8 - payloadSize % 8);
++            configSize = payloadSize - sizeof(struct apm_module_param_data_t);
++            builder->payloadGetParam(s, &payloadData, &payloadSize, miid,
++                          PARAM_ID_FNN_PLUS_DOA_ESTIMATE_MONITOR_WITH_TIMESTAMP, configSize);
++            status = mixer_ctl_set_array(ctl, payloadData, payloadSize);
++            if (0 != status) {
++                PAL_ERR(LOG_TAG, "Set custom config failed, status = %d", status);
++                goto exit;
++            }
++            status = mixer_ctl_get_array(ctl, payloadData, payloadSize);
++            if (0 != status) {
++                PAL_ERR(LOG_TAG, "Get custom config failed, status = %d", status);
++                goto exit;
++            }
++            out = (pal_param_payload *)calloc(1, sizeof(pal_param_payload) + configSize);
++            if (!out) {
++                PAL_ERR(LOG_TAG, "Failed to allocate memory for DOA payload");
++                status = -ENOMEM;
++                goto exit;
++            }
++            out->payload_size = configSize;
++            ptr = (uint8_t *)payloadData + sizeof(struct apm_module_param_data_t);
++            ar_mem_cpy(out->payload, configSize, ptr, configSize);
++            *payload = (void *)out;
++            goto exit;
++        }
+         default:
+             status = EINVAL;
+             PAL_ERR(LOG_TAG, "Unsupported param id %u status %d", param_id, status);
+@@ -3090,6 +3124,7 @@ int SessionAlsaPcm::getParamWithTag(Stream *s __unused, int tagId, uint32_t para
+ 
+     ar_mem_cpy(config, configSize, ptr, configSize);
+     *payload = (void *)config;
++    config = nullptr; /* caller owns the memory, don't free on success */
+ 
+ 
+ exit:
+diff --git a/stream/StreamPCM/Makefile.am b/stream/StreamPCM/Makefile.am
+index 3a23725..aeacc55 100644
+--- a/stream/StreamPCM/Makefile.am
++++ b/stream/StreamPCM/Makefile.am
+@@ -11,6 +11,8 @@ AM_CPPFLAGS += -I $(top_srcdir)/device/inc
+ AM_CPPFLAGS += -I $(top_srcdir)/session/inc
+ AM_CPPFLAGS += -I $(top_srcdir)/stream/inc
+ AM_CPPFLAGS += -I $(top_srcdir)/session/SessionAR/inc
++AM_CPPFLAGS += -I $(top_srcdir)/session/SessionAlsaPcm/inc
++AM_CPPFLAGS += -I $(top_srcdir)/plugins/codecs
+ AM_CPPFLAGS += -I $(top_srcdir)/plugins/PluginManager/inc
+ AM_CPPFLAGS += -I $(top_srcdir)/resource_manager/inc
+ AM_CPPFLAGS += -I $(top_srcdir)/context_manager/inc
+@@ -26,6 +28,8 @@ AM_CPPFLAGS += -I $(top_srcdir)/device/inc
+ AM_CPPFLAGS += -I $(top_srcdir)/session/inc
+ AM_CPPFLAGS += -I $(top_srcdir)/stream/inc
+ AM_CPPFLAGS += -I $(top_srcdir)/session/SessionAR/inc
++AM_CPPFLAGS += -I $(top_srcdir)/session/SessionAlsaPcm/inc
++AM_CPPFLAGS += -I $(top_srcdir)/plugins/codecs
+ AM_CPPFLAGS += -I $(top_srcdir)/plugins/PluginManager/inc
+ AM_CPPFLAGS += -I $(top_srcdir)/resource_manager/inc
+ AM_CPPFLAGS += -I $(top_srcdir)/context_manager/inc
+@@ -44,6 +48,7 @@ lib_LTLIBRARIES     = libstream_pcm.la
+ libstream_pcm_la_SOURCES   = $(stream_pcm_sources)
+ libstream_pcm_la_LIBADD    = @GLIB_LIBS@ -lexpat
+ libstream_pcm_la_LIBADD    += -L${abs_top_builddir}/.libs -lpal
++libstream_pcm_la_LIBADD    += -L${abs_top_builddir}/session/SessionAlsaPcm/.libs -lsession_pcm
+ libstream_pcm_la_CPPFLAGS := $(AM_CPPFLAGS)
+ libstream_pcm_la_CPPFLAGS += -std=c++14
+ libstream_pcm_la_LDFLAGS   = -shared -avoid-version
+diff --git a/stream/StreamPCM/src/StreamPCM.cpp b/stream/StreamPCM/src/StreamPCM.cpp
+index f94e5f5..416a97b 100644
+--- a/stream/StreamPCM/src/StreamPCM.cpp
++++ b/stream/StreamPCM/src/StreamPCM.cpp
+@@ -36,6 +36,7 @@
+ 
+ #include "StreamPCM.h"
+ #include "Session.h"
++#include "SessionAlsaPcm.h"
+ #include "kvh2xml.h"
+ #include "ResourceManager.h"
+ #include "Device.h"
+@@ -1094,6 +1095,7 @@ int32_t StreamPCM::getDeviceMute(pal_stream_direction_t dir, bool *state)
+ int32_t StreamPCM::getParameters(uint32_t param_id, void ** payload)
+ {
+     pal_param_payload *param_payload = nullptr;
++    int32_t status = 0;
+     PAL_DBG(LOG_TAG, "Enter.");
+ 
+     switch(param_id) {
+@@ -1104,15 +1106,24 @@ int32_t StreamPCM::getParameters(uint32_t param_id, void ** payload)
+             getDeviceMute(deviceMutePayload->dir, &(deviceMutePayload->mute));
+             break;
+         }
++        case PAL_PARAM_ID_FNN_PLUS_DOA_ESTIMATE_MONITOR_WITH_TIMESTAMP:
++        {
++            SessionAlsaPcm *sessionAlsa = dynamic_cast<SessionAlsaPcm *>(session);
++            if (sessionAlsa)
++                status = sessionAlsa->getParamWithTag(this, TAG_ECNS, param_id, payload);
++            else
++                status = -ENOSYS;
++            break;
++        }
+         default:
+             PAL_INFO(LOG_TAG, "Not supported for param id %u", param_id);
+             break;
+     }
+ 
+-    return 0;
++    return status;
+ }
+ 
+-int32_t  StreamPCM::setParameters(uint32_t param_id, void *payload)
++int32_t StreamPCM::setParameters(uint32_t param_id, void *payload)
+ {
+     int32_t status = 0;
+     int32_t setConfigStatus = 0;
+-- 
+2.34.1
+
