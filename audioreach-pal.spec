@@ -2,8 +2,8 @@
 %global _lto_cflags %{nil}
 
 Name:           audioreach-pal
-Version:        1.0.0
-Release:        2%{?dist}
+Version:        1.0.3
+Release:        1%{?dist}
 Summary:        AudioReach Platform Adaptation Layer library
 License:        BSD-3-Clause-Clear
 URL:            https://github.com/AudioReach/audioreach-pal
@@ -63,7 +63,6 @@ find %{buildroot} -name '*.la' -delete
 # stream/session/device/bt plugins are dlopen'd by unversioned name via
 # plugin_manager.xml; their unversioned .so must remain in the main package
 %{_libdir}/libstream_*.so
-%{_libdir}/libstreamsensorpcmdata_headers.so
 %{_libdir}/libsession_*.so
 %{_libdir}/libdev_*.so
 %{_libdir}/libbt_*.so
@@ -75,6 +74,7 @@ find %{buildroot} -name '*.la' -delete
 
 %files devel
 %{_includedir}/pal/
+%{_includedir}/vuiInterfaceHeader/
 %{_libdir}/libpal.so
 %{_libdir}/pkgconfig/*.pc
 # static archives built with --disable-shared, linked into libpal at build time
@@ -82,6 +82,11 @@ find %{buildroot} -name '*.la' -delete
 %{_libdir}/libsession_utils_config.a
 
 %changelog
+* Tue Oct 27 2026 Febin Francis <ffrancis@qti.qualcomm.com> - 1.0.3-1
+- Update to 1.0.3
+- Link against gsl and ar_osal via pkg-config
+- Fix playback blocked during concurrent capture and playback
+
 * Fri Sep 25 2026 Chiluka Rohith <rchiluka@qti.qualcomm.com> - 1.0.0-2
 - Move libpal.so unversioned symlink to -devel; keep plugin .so files in
   main as PluginManager dlopen's them by unversioned name at runtime
