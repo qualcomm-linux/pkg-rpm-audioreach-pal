@@ -3,11 +3,12 @@
 
 Name:           audioreach-pal
 Version:        1.0.3
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        AudioReach Platform Adaptation Layer library
 License:        BSD-3-Clause-Clear
 URL:            https://github.com/AudioReach/audioreach-pal
 Source0:        %{url}/archive/refs/tags/v%{version}.tar.gz#/%{name}-%{version}.tar.gz
+Patch0:         0001-pal-add-FNN-DOA-estimate-monitor-param-with-timestam.patch
 
 ExclusiveArch:  aarch64
 
@@ -43,7 +44,7 @@ Headers and pkg-config files for building applications that use
 the AudioReach Platform Adaptation Layer.
 
 %prep
-%autosetup -n %{name}-%{version}
+%autosetup -n %{name}-%{version} -p1
 
 %build
 autoreconf -fi
@@ -82,6 +83,12 @@ find %{buildroot} -name '*.la' -delete
 %{_libdir}/libsession_utils_config.a
 
 %changelog
+* Fri Oct 30 2026 Karthik S <karthik.s@oss.qualcomm.com> - 1.0.3-2
+- Adds PAL_PARAM_ID_FNN_PLUS_DOA_ESTIMATE_MONITOR_WITH_TIMESTAMP
+  support so clients can query active-talker DOA, polar activity,
+  and angle-mapping data (with session timestamp) from the
+  Fluence device.
+
 * Tue Oct 27 2026 Febin Francis <ffrancis@qti.qualcomm.com> - 1.0.3-1
 - Update to 1.0.3
 - Link against gsl and ar_osal via pkg-config

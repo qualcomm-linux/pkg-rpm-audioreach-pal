@@ -1,0 +1,193 @@
+From 3cfd71170740b5c764b5ae412f839f8b8aacc44e Mon Sep 17 00:00:00 2001
+From: Kumar Anurag <kumar.singh@oss.qualcomm.com>
+Date: Tue, 17 Nov 2026 22:54:47 -0800
+Subject: [PATCH] pal: add FNN+ DOA estimate monitor param with timestamp
+
+Adds PAL_PARAM_ID_FNN_PLUS_DOA_ESTIMATE_MONITOR_WITH_TIMESTAMP support
+so clients can query active-talker DOA, polar activity, and angle
+mapping data (with session timestamp) from the Fluence device via
+getParamWithTag/getParameters, and fixes a leak where the generic
+getParamWithTag path never freed its config buffer on the success path.
+
+Signed-off-by: Kumar Anurag <kumar.singh@oss.qualcomm.com>
+---
+ inc/PalDefs.h                                 |  7 +++-
+ session/SessionAR/src/SessionAR.cpp           |  6 +++-
+ session/SessionAlsaPcm/src/SessionAlsaPcm.cpp | 35 +++++++++++++++++++
+ stream/StreamPCM/Makefile.am                  |  2 ++
+ stream/StreamPCM/src/StreamPCM.cpp            |  8 +++--
+ 5 files changed, 54 insertions(+), 4 deletions(-)
+
+diff --git a/inc/PalDefs.h b/inc/PalDefs.h
+index ddde6cb..c7da5f8 100644
+--- a/inc/PalDefs.h
++++ b/inc/PalDefs.h
+@@ -59,8 +59,11 @@ extern "C" {
+ #define MAX_KEYWORD_SUPPORTED 8
+ #define PAL_MAX_LATENCY_MODES 8
+ #define PAL_CUSTOM_PARAM_MAX_STRING_LENGTH 64
++#define TALKER_DOA 2
++#define TOTAL_AXIS 2
++#define TOTAL_DEGREES 360
+ 
+-#define PAL_VERSION "2.1"
++#define PAL_VERSION "2.2"
+ #define PAL_MAX_SOUND_DOSE_VALUES 10
+ #define SEND_MSG_PARAM "sendMsg"
+ 
+@@ -903,6 +906,7 @@ typedef enum {
+     PAL_PARAM_ID_MULTI_CLIENT_ASR_OUTPUT = 107,
+     PAL_PARAM_ID_MULTI_CLIENT_SDZ_OUTPUT = 108,
+     PAL_PARAM_ID_VOICE_NS_RX_CFG = 109,
++    PAL_PARAM_ID_FNN_PLUS_DOA_ESTIMATE_MONITOR_WITH_TIMESTAMP = 110,
+ } pal_param_id_type_t;
+ 
+ /** HDMI/DP */
+@@ -1440,6 +1444,7 @@ struct pal_st_generic_recognition_event {
+     struct pal_st_recognition_event common;
+ };
+ 
++
+ struct detection_engine_config_voice_wakeup {
+     uint16_t mode;
+     uint16_t custom_payload_size;
+diff --git a/session/SessionAR/src/SessionAR.cpp b/session/SessionAR/src/SessionAR.cpp
+index 988f8db..b9a347c 100644
+--- a/session/SessionAR/src/SessionAR.cpp
++++ b/session/SessionAR/src/SessionAR.cpp
+@@ -725,7 +725,7 @@ int SessionAR::HDRConfigKeyToDevOrientation(const char* hdr_custom_key)
+     return ORIENTATION_0;
+ }
+ 
+-int32_t SessionAR::getParameters(Stream *s __unused, uint32_t param_id, void **payload)
++int32_t SessionAR::getParameters(Stream *s, uint32_t param_id, void **payload)
+ {
+     int32_t status = 0;
+ 
+@@ -741,6 +741,10 @@ int32_t SessionAR::getParameters(Stream *s __unused, uint32_t param_id, void **p
+         }
+         case PAL_PARAM_ID_DIRECTION_OF_ARRIVAL:
+             status = this->getParamWithTag(nullptr, TAG_ECNS, param_id, payload);
++            break;
++        case PAL_PARAM_ID_FNN_PLUS_DOA_ESTIMATE_MONITOR_WITH_TIMESTAMP:
++            status = this->getParamWithTag(s, TAG_ECNS, param_id, payload);
++            break;
+         default:
+             PAL_ERR(LOG_TAG, "Error:Unsupported param id %u", param_id);
+             status = -EINVAL;
+diff --git a/session/SessionAlsaPcm/src/SessionAlsaPcm.cpp b/session/SessionAlsaPcm/src/SessionAlsaPcm.cpp
+index 2d94d93..1023345 100644
+--- a/session/SessionAlsaPcm/src/SessionAlsaPcm.cpp
++++ b/session/SessionAlsaPcm/src/SessionAlsaPcm.cpp
+@@ -52,6 +52,7 @@
+ #include "asr_module_calibration_api.h"
+ #include "sdz_api.h"
+ #include "nmt_module_calibration_api.h"
++#include "fnn_plus_calibration_api_fvxv.h"
+ #include <errno.h>
+ #include <sys/klog.h>        /* Definition of SYSLOG_* constants */
+ 
+@@ -3056,6 +3057,39 @@ int SessionAlsaPcm::getParamWithTag(Stream *s __unused, int tagId, uint32_t para
+                           PARAM_ID_NMT_OUTPUT, configSize);
+             break;
+         }
++        case PAL_PARAM_ID_FNN_PLUS_DOA_ESTIMATE_MONITOR_WITH_TIMESTAMP:
++        {
++            pal_param_payload *out = NULL;
++            payloadSize = sizeof(struct apm_module_param_data_t) +
++                          sizeof(fnn_plus_doa_estimate_monitor_param_with_ts_t) +
++                          (TOTAL_DEGREES * sizeof(int16_t) * 2) * TOTAL_AXIS;
++            if (payloadSize % 8 != 0)
++                payloadSize += (8 - payloadSize % 8);
++            configSize = payloadSize - sizeof(struct apm_module_param_data_t);
++            builder->payloadGetParam(s, &payloadData, &payloadSize, miid,
++                          PARAM_ID_FNN_PLUS_DOA_ESTIMATE_MONITOR_WITH_TIMESTAMP, configSize);
++            status = mixer_ctl_set_array(ctl, payloadData, payloadSize);
++            if (0 != status) {
++                PAL_ERR(LOG_TAG, "Set custom config failed, status = %d", status);
++                goto exit;
++            }
++            status = mixer_ctl_get_array(ctl, payloadData, payloadSize);
++            if (0 != status) {
++                PAL_ERR(LOG_TAG, "Get custom config failed, status = %d", status);
++                goto exit;
++            }
++            out = (pal_param_payload *)calloc(1, sizeof(pal_param_payload) + configSize);
++            if (!out) {
++                PAL_ERR(LOG_TAG, "Failed to allocate memory for DOA payload");
++                status = -ENOMEM;
++                goto exit;
++            }
++            out->payload_size = configSize;
++            ptr = (uint8_t *)payloadData + sizeof(struct apm_module_param_data_t);
++            ar_mem_cpy(out->payload, configSize, ptr, configSize);
++            *payload = (void *)out;
++            goto exit;
++        }
+         default:
+             status = EINVAL;
+             PAL_ERR(LOG_TAG, "Unsupported param id %u status %d", param_id, status);
+@@ -3090,6 +3124,7 @@ int SessionAlsaPcm::getParamWithTag(Stream *s __unused, int tagId, uint32_t para
+ 
+     ar_mem_cpy(config, configSize, ptr, configSize);
+     *payload = (void *)config;
++    config = nullptr; /* caller owns the memory, don't free on success */
+ 
+ 
+ exit:
+diff --git a/stream/StreamPCM/Makefile.am b/stream/StreamPCM/Makefile.am
+index 3a23725..b5d127c 100644
+--- a/stream/StreamPCM/Makefile.am
++++ b/stream/StreamPCM/Makefile.am
+@@ -11,6 +11,7 @@ AM_CPPFLAGS += -I $(top_srcdir)/device/inc
+ AM_CPPFLAGS += -I $(top_srcdir)/session/inc
+ AM_CPPFLAGS += -I $(top_srcdir)/stream/inc
+ AM_CPPFLAGS += -I $(top_srcdir)/session/SessionAR/inc
++AM_CPPFLAGS += -I $(top_srcdir)/plugins/codecs
+ AM_CPPFLAGS += -I $(top_srcdir)/plugins/PluginManager/inc
+ AM_CPPFLAGS += -I $(top_srcdir)/resource_manager/inc
+ AM_CPPFLAGS += -I $(top_srcdir)/context_manager/inc
+@@ -26,6 +27,7 @@ AM_CPPFLAGS += -I $(top_srcdir)/device/inc
+ AM_CPPFLAGS += -I $(top_srcdir)/session/inc
+ AM_CPPFLAGS += -I $(top_srcdir)/stream/inc
+ AM_CPPFLAGS += -I $(top_srcdir)/session/SessionAR/inc
++AM_CPPFLAGS += -I $(top_srcdir)/plugins/codecs
+ AM_CPPFLAGS += -I $(top_srcdir)/plugins/PluginManager/inc
+ AM_CPPFLAGS += -I $(top_srcdir)/resource_manager/inc
+ AM_CPPFLAGS += -I $(top_srcdir)/context_manager/inc
+diff --git a/stream/StreamPCM/src/StreamPCM.cpp b/stream/StreamPCM/src/StreamPCM.cpp
+index f94e5f5..6cef0cc 100644
+--- a/stream/StreamPCM/src/StreamPCM.cpp
++++ b/stream/StreamPCM/src/StreamPCM.cpp
+@@ -1094,6 +1094,7 @@ int32_t StreamPCM::getDeviceMute(pal_stream_direction_t dir, bool *state)
+ int32_t StreamPCM::getParameters(uint32_t param_id, void ** payload)
+ {
+     pal_param_payload *param_payload = nullptr;
++    int32_t status = 0;
+     PAL_DBG(LOG_TAG, "Enter.");
+ 
+     switch(param_id) {
+@@ -1104,15 +1105,18 @@ int32_t StreamPCM::getParameters(uint32_t param_id, void ** payload)
+             getDeviceMute(deviceMutePayload->dir, &(deviceMutePayload->mute));
+             break;
+         }
++        case PAL_PARAM_ID_FNN_PLUS_DOA_ESTIMATE_MONITOR_WITH_TIMESTAMP:
++            status = session->getParameters(this, param_id, payload);
++            break;
+         default:
+             PAL_INFO(LOG_TAG, "Not supported for param id %u", param_id);
+             break;
+     }
+ 
+-    return 0;
++    return status;
+ }
+ 
+-int32_t  StreamPCM::setParameters(uint32_t param_id, void *payload)
++int32_t StreamPCM::setParameters(uint32_t param_id, void *payload)
+ {
+     int32_t status = 0;
+     int32_t setConfigStatus = 0;
+-- 
+2.34.1
+
